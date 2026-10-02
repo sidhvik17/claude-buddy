@@ -30,6 +30,11 @@ namespace ClaudeBuddy
         public const uint MOD_WIN = 0x0008;
         public const uint MOD_NOREPEAT = 0x4000;
 
+        public const uint ES_SYSTEM_REQUIRED = 0x00000001;
+        public const uint ES_DISPLAY_REQUIRED = 0x00000002;
+        public const uint ES_CONTINUOUS = 0x80000000;
+        public const int SystemExecutionState = 16; // POWER_INFORMATION_LEVEL
+
         [StructLayout(LayoutKind.Sequential)]
         public struct POINT
         {
@@ -101,6 +106,14 @@ namespace ClaudeBuddy
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+        // Returns the calling thread's previous execution state, or 0 on failure.
+        [DllImport("kernel32.dll")]
+        public static extern uint SetThreadExecutionState(uint esFlags);
+
+        // With SystemExecutionState: the ES_* flags currently in force system-wide. 0 = success.
+        [DllImport("powrprof.dll")]
+        public static extern int CallNtPowerInformation(int level, IntPtr inBuffer, int inLength, out uint outBuffer, int outLength);
 
         // Windows 10 1607+. Callers fall back to the Graphics DPI if it is missing.
         [DllImport("user32.dll")]

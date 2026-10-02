@@ -179,6 +179,7 @@ namespace ClaudeBuddy
             tray.Visible = true;
             animTimer.Start();
             scanTimer.Start();
+            if (Config.KeepAwake) SetKeepAwake(true);
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)
@@ -186,6 +187,7 @@ namespace ClaudeBuddy
             SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
             animTimer.Stop();
             scanTimer.Stop();
+            ScreenAwake.Set(false);
             tray.Visible = false;
             tray.Dispose();
             foreach (Icon icon in trayIcons.Values) icon.Dispose();
@@ -329,6 +331,13 @@ namespace ClaudeBuddy
             Log.Write(hotkeyRegistered
                 ? "hotkey " + hotkey.Display + " registered"
                 : "hotkey " + hotkey.Display + " is taken by another program; hide/show from the menu or tray icon instead");
+        }
+
+        void SetKeepAwake(bool on)
+        {
+            bool ok = ScreenAwake.Set(on) != 0;
+            if (!ok) Log.Write("Windows refused the keep-awake request");
+            else Log.Write(on ? "keeping the screen awake" : "screen may sleep again");
         }
 
         // Hiding only removes the sprite: the tray icon stays and keeps showing the state.
@@ -798,6 +807,16 @@ namespace ClaudeBuddy
                 Config.Save();
             };
             menu.Items.Add(top);
+
+            ToolStripMenuItem awake = new ToolStripMenuItem("Keep screen awake");
+            awake.Checked = Config.KeepAwake;
+            awake.Click += delegate
+            {
+                Config.KeepAwake = !Config.KeepAwake;
+                SetKeepAwake(Config.KeepAwake);
+                Config.Save();
+            };
+            menu.Items.Add(awake);
 
             ToolStripMenuItem auto = new ToolStripMenuItem("Start with Windows");
             auto.Checked = Config.AutoStart;

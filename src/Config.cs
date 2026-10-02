@@ -19,6 +19,7 @@ namespace ClaudeBuddy
         public static int Size = 1;          // 0 small, 1 medium, 2 large
         public static bool TopMost = true;
         public static bool AutoStart = true;
+        public static bool KeepAwake;                 // keep the display on and the PC awake while the buddy runs
         public static string Hotkey = "Ctrl+Alt+H";   // hide/show; "none" turns it off
         public static long LimitResetTicks;           // remembered usage limit (UTC ticks), 0 = none
         public static long LimitSeenTicks;
@@ -53,6 +54,7 @@ namespace ClaudeBuddy
                     else if (key == "size" && isInt) Size = Math.Max(0, Math.Min(2, n));
                     else if (key == "topmost") TopMost = value != "0";
                     else if (key == "autostart") AutoStart = value != "0";
+                    else if (key == "keepawake") KeepAwake = value == "1";
                     else if (key == "hotkey") Hotkey = value;
                     else if (key == "limit_reset") long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out LimitResetTicks);
                     else if (key == "limit_seen") long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out LimitSeenTicks);
@@ -75,6 +77,7 @@ namespace ClaudeBuddy
                 sb.AppendLine("size=" + Size.ToString(CultureInfo.InvariantCulture));
                 sb.AppendLine("topmost=" + (TopMost ? "1" : "0"));
                 sb.AppendLine("autostart=" + (AutoStart ? "1" : "0"));
+                sb.AppendLine("keepawake=" + (KeepAwake ? "1" : "0"));
                 sb.AppendLine("hotkey=" + Hotkey);
                 sb.AppendLine("limit_reset=" + LimitResetTicks.ToString(CultureInfo.InvariantCulture));
                 sb.AppendLine("limit_seen=" + LimitSeenTicks.ToString(CultureInfo.InvariantCulture));
@@ -143,6 +146,21 @@ namespace ClaudeBuddy
             shown.Add(keyName);
             h.Display = string.Join("+", shown.ToArray());
             return h;
+        }
+    }
+
+    // Stops the display from dimming or turning off, and the PC from going to sleep by
+    // itself, for as long as the request is held. Closing the lid or pressing the power
+    // button still works. The request belongs to the thread that makes it, so it is always
+    // made from the UI thread; Windows drops it when the process ends.
+    internal static class ScreenAwake
+    {
+        // Returns the thread's previous execution state, or 0 if Windows refused.
+        public static uint Set(bool on)
+        {
+            uint flags = Native.ES_CONTINUOUS;
+            if (on) flags |= Native.ES_DISPLAY_REQUIRED | Native.ES_SYSTEM_REQUIRED;
+            return Native.SetThreadExecutionState(flags);
         }
     }
 

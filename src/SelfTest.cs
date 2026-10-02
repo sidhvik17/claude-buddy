@@ -25,6 +25,7 @@ namespace ClaudeBuddy
                 TestJson();
                 TestEncoding();
                 TestHotkey();
+                TestKeepAwake();
                 TestScanner(root);
                 TestLimit(root);
                 TestSprite();
@@ -77,6 +78,24 @@ namespace ClaudeBuddy
             Check("status map", SessionScanner.MapStatus("busy") == BuddyState.Working && SessionScanner.MapStatus("shell") == BuddyState.Working &&
                 SessionScanner.MapStatus("waiting") == BuddyState.Waiting && SessionScanner.MapStatus("idle") == BuddyState.Idle &&
                 SessionScanner.MapStatus("something-new") == BuddyState.Idle);
+        }
+
+        static void TestKeepAwake()
+        {
+            const uint Held = Native.ES_CONTINUOUS | Native.ES_DISPLAY_REQUIRED | Native.ES_SYSTEM_REQUIRED;
+            uint before = ScreenAwake.Set(true);    // previous state of this thread
+            uint system;
+            bool queried = Native.CallNtPowerInformation(Native.SystemExecutionState, IntPtr.Zero, 0, out system, 4) == 0;
+            uint whileOn = ScreenAwake.Set(false);  // what the thread held until now
+            uint afterOff = ScreenAwake.Set(false);
+            Check("keep awake: Windows accepted the request", before != 0);
+            Check("keep awake: display and system were held until released", whileOn == Held);
+            Check("keep awake: released", afterOff == Native.ES_CONTINUOUS);
+            if (queried)
+            {
+                Check("keep awake: Windows reported display and system as required meanwhile",
+                    (system & (Native.ES_DISPLAY_REQUIRED | Native.ES_SYSTEM_REQUIRED)) == (Native.ES_DISPLAY_REQUIRED | Native.ES_SYSTEM_REQUIRED));
+            }
         }
 
         static void TestHotkey()

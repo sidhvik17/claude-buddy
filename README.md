@@ -152,12 +152,16 @@ with `-InstallDir` and switched "Start with Windows" off, pass the same `-Instal
   marks current errors as seen, so the red light goes out.
 - **Drag:** move it anywhere. The position is remembered.
 - **Right click** (or the tray icon): list of sessions with their state (click one to
-  open it), Open Claude Code, Hide buddy, Preview light, Size, Always on top, Start
-  with Windows, Reset position, Exit.
+  open it), Open Claude Code, Hide buddy, Preview light, Size, Always on top, Keep
+  screen awake, Start with Windows, Reset position, Exit.
 - **Hover:** a summary such as "1 needs you, 2 working, 3 idle".
 - **Hide / show:** `Ctrl+Alt+H` from anywhere, or "Hide buddy" in the menu. Hiding only
   removes the sprite. The tray icon stays, keeps its coloured status dot, and brings
   the buddy back with a left click or "Show buddy".
+- **Keep screen awake:** off by default. When ticked, the display does not dim or turn
+  off and the PC does not go to sleep by itself while the buddy runs, so the light is
+  always visible. Closing the lid or pressing the power button still works. It uses
+  more battery. (`keepawake=1` in `config.ini`.)
 - **Preview light:** plays any state for six seconds (the whole 18-second rotation for
   green), so you can see yellow, red and the usage-limit timer without waiting for
   Claude to be in that state.
@@ -400,7 +404,7 @@ Things that cost time and are worth knowing:
 
 Checked:
 
-- Build is clean and all 84 self-test checks pass.
+- Build is clean and all 88 self-test checks pass.
 - `--dump` against the real `~/.claude` matched reality (6 sessions, the 2 helper
   processes filtered out).
 - The contact sheet shows every state drawing correctly.
