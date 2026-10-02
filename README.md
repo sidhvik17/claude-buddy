@@ -34,6 +34,11 @@ admin rights, and it does not touch your Claude settings.
 **Windows only.** The window, tray icon, hotkey and autostart are all Win32. A macOS
 version would be a separate program.
 
+![Every state of the buddy: sleeping, idle, working, waiting, error, done, usage-limit timer](docs/states.png)
+
+*Unofficial fan project. Not affiliated with or endorsed by Anthropic. Released under
+the MIT license.*
+
 ---
 
 ## 1. Build it
