@@ -29,11 +29,13 @@ namespace ClaudeBuddy
         public DateTime ResetUtc = DateTime.MinValue;   // usage-limit errors only: when the limit lifts
     }
 
-    // The last user/assistant record of a transcript.
+    // The last assistant record of a transcript.
     internal sealed class TurnInfo
     {
         public DateTime WhenUtc = DateTime.MinValue;
+        public DateTime RequestUtc = DateTime.MinValue;   // for a reply: when the request it answers was sent
         public bool Replied;      // an ordinary assistant reply: proof that requests were going through
+        public bool PromptAfter;  // a user record follows it: a new prompt is being worked on
         public ErrorInfo Error;   // set when the turn ended in an API error
     }
 
@@ -140,7 +142,20 @@ namespace ClaudeBuddy
         public int LastFileCount;
 
         // When the usage limit that is currently blocking Claude lifts; MinValue when none is in force.
+        // It is remembered from the moment a session reports it until the reset time, even if
+        // the message is later deleted from the conversation or the session is closed.
         public DateTime LimitResetUtc = DateTime.MinValue;
+        public DateTime LimitSeenUtc = DateTime.MinValue;   // when that limit message was written
+
+        static readonly TimeSpan MaxLimitAhead = TimeSpan.FromDays(8);
+
+        // Puts back a limit remembered by an earlier run. Scan drops it once it has passed.
+        public void RestoreLimit(DateTime resetUtc, DateTime seenUtc)
+        {
+            if (resetUtc - DateTime.UtcNow > MaxLimitAhead) return; // not something Claude would say
+            LimitResetUtc = resetUtc;
+            LimitSeenUtc = seenUtc;
+        }
 
         public SessionScanner(string sessionsDir, string projectsDir)
         {
@@ -200,11 +215,22 @@ namespace ClaudeBuddy
             {
                 seenSessions.Add(s.SessionId);
                 s.State = MapStatus(s.Status);
-                if (s.State != BuddyState.Idle) continue;
+                if (s.State == BuddyState.Waiting) continue;
                 TurnInfo turn = Probe(s, now);
                 if (turn == null) continue;
+                if (s.State == BuddyState.Working)
+                {
+                    // "busy" is also what a session reports while it is parked until a usage
+                    // limit resets (auto-resume). That is not work: its last record is the limit
+                    // message and no new prompt has followed it.
+                    bool parked = turn.Error != null && turn.Error.ResetUtc > now && !turn.PromptAfter;
+                    if (!parked) continue;
+                    s.State = BuddyState.Idle;
+                }
                 turns[s] = turn;
-                if (turn.Replied && turn.WhenUtc > lastReplyUtc) lastReplyUtc = turn.WhenUtc;
+                // Judged by when the request went out: a reply that was already streaming when
+                // the limit hit another session finishes after the limit message but proves nothing.
+                if (turn.Replied && turn.RequestUtc > lastReplyUtc) lastReplyUtc = turn.RequestUtc;
             }
             Prune(probes, seenSessions);
 
@@ -223,7 +249,17 @@ namespace ClaudeBuddy
                     pair.Key.State = BuddyState.Error;
                 }
             }
-            LimitResetUtc = limit != null ? limit.ResetUtc : DateTime.MinValue;
+            if (limit != null && limit.WhenUtc >= LimitSeenUtc)
+            {
+                LimitSeenUtc = limit.WhenUtc;
+                LimitResetUtc = limit.ResetUtc;
+            }
+            // Forget it once it has passed, or once a request sent after it got an ordinary reply.
+            if (LimitResetUtc <= now || lastReplyUtc > LimitSeenUtc)
+            {
+                LimitResetUtc = DateTime.MinValue;
+                LimitSeenUtc = DateTime.MinValue;
+            }
 
             result.Sort(CompareSessions);
             return result;
@@ -416,7 +452,9 @@ namespace ClaudeBuddy
                         }
                         catch (Exception)
                         {
-                            return true; // cannot query (protected process): trust the pid
+                            // Start time unreadable. A system process that reused the pid looks
+                            // like this; so does Claude started from an elevated terminal.
+                            return LooksLikeClaude(p);
                         }
                         if (Math.Abs(got - want) > ProcStartToleranceTicks) return false;
                     }
@@ -434,6 +472,20 @@ namespace ClaudeBuddy
             catch (Exception)
             {
                 return true;
+            }
+        }
+
+        static bool LooksLikeClaude(Process p)
+        {
+            try
+            {
+                string name = p.ProcessName;
+                return string.Equals(name, "claude", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(name, "node", StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception)
+            {
+                return false;
             }
         }
 
@@ -465,9 +517,9 @@ namespace ClaudeBuddy
                 }
                 if (fi.Length != pe.Length || fi.LastWriteTimeUtc != pe.Mtime)
                 {
-                    pe.Length = fi.Length;
-                    pe.Mtime = fi.LastWriteTimeUtc;
                     pe.Turn = Transcript.ReadLastTurn(pe.Path);
+                    pe.Length = fi.Length;      // only after a successful read, so a failed one is retried
+                    pe.Mtime = fi.LastWriteTimeUtc;
                 }
                 return pe.Turn;
             }
@@ -507,7 +559,7 @@ namespace ClaudeBuddy
             return turn != null ? turn.Error : null;
         }
 
-        // Describes the last user/assistant record in the transcript tail; null if there is none.
+        // Describes the last assistant record in the transcript tail; null if there is none.
         public static TurnInfo ReadLastTurn(string path)
         {
             string text;
@@ -530,6 +582,8 @@ namespace ClaudeBuddy
 
             string[] lines = text.Split('\n');
             int first = truncated ? 1 : 0; // the first line of a tail is usually cut in half
+            TurnInfo reply = null;
+            bool promptAfter = false;
             for (int i = lines.Length - 1; i >= first; i--)
             {
                 string line = lines[i].Trim();
@@ -553,22 +607,37 @@ namespace ClaudeBuddy
                 string type = MiniJson.GetString(d, "type");
                 if (type != "user" && type != "assistant") continue;
 
-                TurnInfo turn = new TurnInfo();
                 DateTime when;
-                if (DateTime.TryParse(MiniJson.GetString(d, "timestamp"), CultureInfo.InvariantCulture,
+                if (!DateTime.TryParse(MiniJson.GetString(d, "timestamp"), CultureInfo.InvariantCulture,
                         DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out when))
                 {
-                    turn.WhenUtc = when;
+                    when = File.GetLastWriteTimeUtc(path);
                 }
-                else
+
+                if (reply != null)
                 {
-                    turn.WhenUtc = File.GetLastWriteTimeUtc(path);
+                    // Found the reply already; now looking for the prompt or tool result it answered.
+                    if (type != "user") continue;
+                    reply.RequestUtc = when < reply.WhenUtc ? when : reply.WhenUtc;
+                    return reply;
                 }
-                if (type == "user") return turn;
+                // Slash commands, task notifications and interrupted prompts are user records
+                // with no model turn behind them: keep looking for the last assistant record.
+                if (type == "user")
+                {
+                    if (!MiniJson.GetBool(d, "isMeta")) promptAfter = true;
+                    continue;
+                }
+
+                TurnInfo turn = new TurnInfo();
+                turn.WhenUtc = when;
+                turn.PromptAfter = promptAfter;
                 if (!MiniJson.GetBool(d, "isApiErrorMessage"))
                 {
                     turn.Replied = true;
-                    return turn;
+                    turn.RequestUtc = when;
+                    reply = turn;
+                    continue;
                 }
 
                 ErrorInfo e = new ErrorInfo();
@@ -580,7 +649,7 @@ namespace ClaudeBuddy
                 turn.Error = e;
                 return turn;
             }
-            return null;
+            return reply;
         }
 
         static string FirstText(Dictionary<string, object> record)

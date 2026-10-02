@@ -61,11 +61,20 @@ namespace ClaudeBuddy
         int previewLeft;
         bool previewTimer;
         DateTime limitResetUtc = DateTime.MinValue;
+        bool dpiSyncQueued;
+        bool downIsRepeat;      // this press is the second half of a double-click
+        IntPtr menuReturnTo;    // foreground window the sprite's menu took over from
+        bool menuLaunched;      // the chosen item opened Claude: leave the foreground alone
 
         public BuddyForm(Options opts)
         {
             this.opts = opts;
             scanner = new SessionScanner(opts.SessionsDir, opts.ProjectsDir);
+            if (Config.LimitResetTicks > 0 && Config.LimitResetTicks < DateTime.MaxValue.Ticks &&
+                Config.LimitSeenTicks >= 0 && Config.LimitSeenTicks < DateTime.MaxValue.Ticks)
+            {
+                scanner.RestoreLimit(new DateTime(Config.LimitResetTicks, DateTimeKind.Utc), new DateTime(Config.LimitSeenTicks, DateTimeKind.Utc));
+            }
 
             Text = "Claude Buddy";
             FormBorderStyle = FormBorderStyle.None;
@@ -81,6 +90,22 @@ namespace ClaudeBuddy
             {
                 BuildMenu();
                 e.Cancel = false;
+            };
+            menu.Closed += delegate
+            {
+                // Showing the menu made this never-active window the foreground window.
+                // Give the foreground back, unless the chosen item opened Claude.
+                IntPtr target = menuReturnTo;
+                menuReturnTo = IntPtr.Zero;
+                if (target == IntPtr.Zero || !IsHandleCreated) return;
+                // Closed is raised before the clicked item's Click handler, so decide afterwards.
+                BeginInvoke((MethodInvoker)delegate
+                {
+                    if (!menuLaunched && IsHandleCreated && Native.GetForegroundWindow() == Handle)
+                    {
+                        Native.SetForegroundWindow(target);
+                    }
+                });
             };
 
             tray.Text = "Claude Buddy";
@@ -142,9 +167,7 @@ namespace ClaudeBuddy
             base.OnLoad(e);
             dpi = QueryDpi();
             Rescale(false);
-            if (Config.X != Config.NoPosition && Config.Y != Config.NoPosition) Location = new Point(Config.X, Config.Y);
-            else ResetPosition(false);
-            EnsureOnScreen();
+            RestorePosition();
         }
 
         protected override void OnShown(EventArgs e)
@@ -189,15 +212,43 @@ namespace ClaudeBuddy
                 return;
             }
             base.WndProc(ref m);
-            if (m.Msg == Native.WM_DPICHANGED)
+            if (m.Msg == Native.WM_DPICHANGED && !dpiSyncQueued)
             {
-                int newDpi = (int)((long)m.WParam & 0xFFFF);
-                if (newDpi > 0 && newDpi != dpi)
+                // Resizing here would run SetWindowPos inside the notification, which can
+                // raise the next WM_DPICHANGED before this one returns. Settle afterwards.
+                dpiSyncQueued = true;
+                try
                 {
-                    dpi = newDpi;
-                    Rescale(true);
-                    EnsureOnScreen();
+                    BeginInvoke((MethodInvoker)delegate { Guard(SyncDpi); });
                 }
+                catch (InvalidOperationException)
+                {
+                    dpiSyncQueued = false;
+                }
+            }
+        }
+
+        // Applies a DPI change once the move or display change that caused it has finished.
+        void SyncDpi()
+        {
+            try
+            {
+                bool changed = false;
+                for (int pass = 0; pass < 3 && IsHandleCreated; pass++)
+                {
+                    int current = QueryDpi();
+                    if (current == dpi) break;
+                    dpi = current;
+                    Rescale(true);
+                    changed = true;
+                }
+                if (!changed || mouseDown) return; // a drag in progress is settled by OnMouseUp
+                ClampToWorkingArea();
+                if (Config.X != Config.NoPosition) SavePosition();
+            }
+            finally
+            {
+                dpiSyncQueued = false;
             }
         }
 
@@ -225,6 +276,10 @@ namespace ClaudeBuddy
             if (reset != limitResetUtc)
             {
                 limitResetUtc = reset;
+                // Kept in config.ini so the countdown survives a restart of the buddy.
+                Config.LimitResetTicks = reset > DateTime.UtcNow ? reset.Ticks : 0;
+                Config.LimitSeenTicks = reset > DateTime.UtcNow ? scanner.LimitSeenUtc.Ticks : 0;
+                Config.Save();
                 Log.Write(reset > DateTime.UtcNow
                     ? "usage limit in force, resets at " + reset.ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture)
                     : "usage limit no longer in force");
@@ -248,7 +303,7 @@ namespace ClaudeBuddy
                 tray.Text = summary.Length > 63 ? summary.Substring(0, 63) : summary;
             }
 
-            if (Config.TopMost && IsHandleCreated && !hidden)
+            if (Config.TopMost && IsHandleCreated && !hidden && !menu.Visible)
             {
                 Native.SetWindowPos(Handle, Native.HWND_TOPMOST, 0, 0, 0, 0,
                     Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
@@ -284,6 +339,7 @@ namespace ClaudeBuddy
             if (hide)
             {
                 animTimer.Stop();
+                if (dragging) SavePosition();
                 mouseDown = false;
                 dragging = false;
                 Hide();
@@ -372,8 +428,21 @@ namespace ClaudeBuddy
             if (old != null) old.Dispose();
             lastKey = null;
 
-            if (keepCorner) SetBounds(corner.X - w, corner.Y - h, w, h);
-            else Size = new Size(w, h);
+            if (keepCorner)
+            {
+                Rectangle target = new Rectangle(corner.X - w, corner.Y - h, w, h);
+                // Resizing from the corner must not move the larger half onto another monitor
+                // (that would change the DPI again): scale about the centre in that case.
+                if (!Screen.FromRectangle(target).Equals(Screen.FromRectangle(Bounds)))
+                {
+                    target = new Rectangle(Left + (Width - w) / 2, Top + (Height - h) / 2, w, h);
+                }
+                SetBounds(target.X, target.Y, w, h);
+            }
+            else
+            {
+                Size = new Size(w, h);
+            }
             if (IsHandleCreated && Visible) Render();
         }
 
@@ -463,6 +532,23 @@ namespace ClaudeBuddy
             if (save) SavePosition();
         }
 
+        // Saved position if there is one, else the default corner; then the visibility fallback.
+        void RestorePosition()
+        {
+            if (mouseDown) return; // the user is placing it right now
+            if (Config.X != Config.NoPosition && Config.Y != Config.NoPosition) Location = new Point(Config.X, Config.Y);
+            else ResetPosition(false);
+            EnsureOnScreen();
+        }
+
+        void ClampToWorkingArea()
+        {
+            Rectangle area = Screen.FromRectangle(Bounds).WorkingArea;
+            int x = Math.Max(area.Left, Math.Min(Left, area.Right - Width));
+            int y = Math.Max(area.Top, Math.Min(Top, area.Bottom - Height));
+            if (x != Left || y != Top) Location = new Point(x, y);
+        }
+
         void EnsureOnScreen()
         {
             Rectangle bounds = Bounds;
@@ -486,7 +572,7 @@ namespace ClaudeBuddy
             if (IsDisposed || !IsHandleCreated) return;
             try
             {
-                BeginInvoke((MethodInvoker)delegate { Guard(EnsureOnScreen); });
+                BeginInvoke((MethodInvoker)delegate { Guard(RestorePosition); });
             }
             catch (InvalidOperationException)
             {
@@ -501,6 +587,7 @@ namespace ClaudeBuddy
             if (e.Button != MouseButtons.Left) return;
             mouseDown = true;
             dragging = false;
+            downIsRepeat = e.Clicks > 1;
             downCursor = Cursor.Position;
             downLocation = Location;
         }
@@ -526,7 +613,7 @@ namespace ClaudeBuddy
             base.OnMouseUp(e);
             if (e.Button == MouseButtons.Right)
             {
-                ShowMenu();
+                if (!mouseDown) ShowMenu(); // not in the middle of a left-button press or drag
                 return;
             }
             if (e.Button != MouseButtons.Left || !mouseDown) return;
@@ -537,8 +624,9 @@ namespace ClaudeBuddy
                 EnsureOnScreen();
                 SavePosition();
             }
-            else
+            else if (!downIsRepeat)
             {
+                // The second press of a double-click must not open Claude a second time.
                 Guard(OnBuddyClick);
             }
         }
@@ -548,8 +636,18 @@ namespace ClaudeBuddy
             base.OnMouseCaptureChanged(e);
             if (!Capture)
             {
+                // A normal release has already cleared dragging; this is a drag cut short.
+                bool commit = dragging;
                 mouseDown = false;
                 dragging = false;
+                if (commit)
+                {
+                    Guard(delegate
+                    {
+                        EnsureOnScreen();
+                        SavePosition();
+                    });
+                }
             }
         }
 
@@ -566,7 +664,9 @@ namespace ClaudeBuddy
                     break;
                 }
             }
-            scanner.Acknowledge(sessions);
+            // Only red that was actually on the lamp counts as seen: while a session is
+            // waiting, the lamp is yellow and other sessions' errors were never shown.
+            if (target != null && target.State == BuddyState.Error) scanner.Acknowledge(sessions);
             if (target != null) Launcher.OpenSession(target);
             else Launcher.OpenCodeHome();
         }
@@ -574,7 +674,10 @@ namespace ClaudeBuddy
         void ShowMenu()
         {
             // A menu owned by a never-active window only closes on an outside click if
-            // its owner is foreground first.
+            // its owner is foreground first. menu.Closed hands the foreground back.
+            IntPtr previous = Native.GetForegroundWindow();
+            menuReturnTo = previous != Handle ? previous : IntPtr.Zero;
+            menuLaunched = false;
             Native.SetForegroundWindow(Handle);
             menu.Show(Cursor.Position);
         }
@@ -624,13 +727,21 @@ namespace ClaudeBuddy
                 if (name.Length > 44) name = name.Substring(0, 43) + "…";
                 ToolStripMenuItem item = new ToolStripMenuItem(name.Replace("&", "&&") + "   —   " + session.StateText.Replace("&", "&&"));
                 item.Image = Dot(Sprite.LedColor(session.State));
-                item.Click += delegate { Guard(delegate { Launcher.OpenSession(session); }); };
+                item.Click += delegate
+                {
+                    menuLaunched = true;
+                    Guard(delegate { Launcher.OpenSession(session); });
+                };
                 menu.Items.Add(item);
             }
             if (sessions.Count > 0) menu.Items.Add(new ToolStripSeparator());
 
             ToolStripMenuItem open = new ToolStripMenuItem("Open Claude Code");
-            open.Click += delegate { Guard(Launcher.OpenCodeHome); };
+            open.Click += delegate
+            {
+                menuLaunched = true;
+                Guard(Launcher.OpenCodeHome);
+            };
             menu.Items.Add(open);
 
             ToolStripMenuItem hide = new ToolStripMenuItem(hidden ? "Show buddy" : "Hide buddy");

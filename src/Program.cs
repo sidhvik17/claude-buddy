@@ -56,6 +56,13 @@ namespace ClaudeBuddy
                     commandArg = next;
                     i++;
                 }
+                else
+                {
+                    // Never fall through to a normal start: that would register autostart
+                    // for whatever exe a mistyped command was run from.
+                    Log.Write("unknown or incomplete argument: " + a);
+                    return 2;
+                }
             }
 
             try

@@ -282,6 +282,12 @@ namespace ClaudeBuddy
                 "\"}]},\"error\":\"rate_limit\",\"isApiErrorMessage\":true,\"apiErrorStatus\":429}";
         }
 
+        static string UserAt(string text, TimeSpan ago)
+        {
+            return "{\"parentUuid\":\"p\",\"isSidechain\":false,\"type\":\"user\",\"uuid\":\"u-user-at\",\"timestamp\":\"" + IsoNow(ago) +
+                "\",\"message\":{\"role\":\"user\",\"content\":\"" + text + "\"}}";
+        }
+
         static string AssistantAt(string text, TimeSpan ago)
         {
             return "{\"parentUuid\":\"p\",\"isSidechain\":false,\"type\":\"assistant\",\"uuid\":\"u-at\",\"timestamp\":\"" + IsoNow(ago) +
@@ -357,16 +363,73 @@ namespace ClaudeBuddy
             Check("limit: reset time reported", Math.Abs((scanner.LimitResetUtc - resetLocal.ToUniversalTime()).TotalSeconds) < 1);
             Check("limit: session text names the reset", limited != null && limited.StateText.StartsWith("usage limit, resets ", StringComparison.Ordinal));
 
+            // A local slash command or task notification after the limit message is not a reply.
+            WriteTranscript(projectsDir, cwd, "s-limit", User("go") + "\n" + LimitError("lim1", TimeSpan.FromHours(2), Session + clock + " (Asia/Calcutta)") + "\n" +
+                User("<command-name>/model</command-name>") + "\n" + Trailer);
+            list = scanner.Scan();
+            Check("limit: survives a trailing user record", Find(list, "s-limit").State == BuddyState.Error && scanner.LimitResetUtc > DateTime.UtcNow);
+
+            // A reply whose request went out before the limit hit, and finished just after it, proves nothing.
+            WriteTranscript(projectsDir, cwd, "s-other", UserAt("earlier", TimeSpan.FromHours(3)) + "\n" +
+                AssistantAt("was already streaming", TimeSpan.FromHours(2) - TimeSpan.FromSeconds(3)) + "\n" + Trailer);
+            list = scanner.Scan();
+            Check("limit: an in-flight reply does not lift it", Find(list, "s-limit").State == BuddyState.Error && scanner.LimitResetUtc > DateTime.UtcNow);
+
+            // An ordinary API error also survives a trailing user record.
+            WriteSession(sessionsDir, "3.json", me, myStart, "s-apierr", "local_3333", "idle", null, true, cwd, "Api error");
+            WriteTranscript(projectsDir, cwd, "s-apierr", User("go") + "\n" + ApiError("e-u", TimeSpan.FromMinutes(1)) + "\n" + User("<task-notification>done</task-notification>") + "\n" + Trailer);
+            list = scanner.Scan();
+            Check("error: survives a trailing user record", Find(list, "s-apierr") != null && Find(list, "s-apierr").State == BuddyState.Error);
+            File.Delete(Path.Combine(sessionsDir, "3.json"));
+
             scanner.Acknowledge(list);
             list = scanner.Scan();
             Check("limit: acknowledged -> lamp off, countdown stays",
                 Find(list, "s-limit").State == BuddyState.Idle && scanner.LimitResetUtc > DateTime.UtcNow);
+
+            // The limit is remembered even when its message disappears from the transcript
+            // (the user rewinds or deletes it).
+            string limitTranscript = User("go") + "\n" + LimitError("lim2", TimeSpan.FromHours(2), Session + clock + " (Asia/Calcutta)") + "\n" + Trailer;
+            WriteTranscript(projectsDir, cwd, "s-limit", UserAt("old", TimeSpan.FromHours(6)) + "\n" + AssistantAt("old reply", TimeSpan.FromHours(6)) + "\n" + Trailer);
+            list = scanner.Scan();
+            Check("limit: remembered after its message is deleted", Find(list, "s-limit").State == BuddyState.Idle && scanner.LimitResetUtc > DateTime.UtcNow);
+
+            // ...and across a restart of the buddy.
+            SessionScanner restarted = new SessionScanner(sessionsDir, projectsDir);
+            restarted.RestoreLimit(scanner.LimitResetUtc, scanner.LimitSeenUtc);
+            restarted.Scan();
+            Check("limit: restored after a restart", Math.Abs((restarted.LimitResetUtc - scanner.LimitResetUtc).TotalSeconds) < 1);
+            SessionScanner expired = new SessionScanner(sessionsDir, projectsDir);
+            expired.RestoreLimit(DateTime.UtcNow.AddMinutes(-1), DateTime.UtcNow.AddHours(-3));
+            expired.Scan();
+            Check("limit: an expired one is dropped on restore", expired.LimitResetUtc == DateTime.MinValue);
+            SessionScanner absurd = new SessionScanner(sessionsDir, projectsDir);
+            absurd.RestoreLimit(DateTime.UtcNow.AddDays(400), DateTime.UtcNow);
+            Check("limit: an absurd restored value is ignored", absurd.LimitResetUtc == DateTime.MinValue);
+
+            // A session parked until the limit resets (auto-resume) reports "busy". It is not working.
+            WriteSession(sessionsDir, "1.json", me, myStart, "s-limit", "local_1111", "busy", null, true, cwd, "Limited");
+            File.SetLastWriteTimeUtc(Path.Combine(sessionsDir, "1.json"), DateTime.UtcNow.AddSeconds(5));
+            WriteTranscript(projectsDir, cwd, "s-limit", limitTranscript);
+            list = scanner.Scan();
+            Check("limit: busy but parked on the limit is not Working",
+                Find(list, "s-limit").State == BuddyState.Error && SessionScanner.Aggregate(list) == BuddyState.Error && scanner.LimitResetUtc > DateTime.UtcNow);
+            WriteTranscript(projectsDir, cwd, "s-limit", limitTranscript.Replace(Trailer, "") + User("try again") + "\n" + Trailer);
+            list = scanner.Scan();
+            Check("limit: busy with a new prompt after the limit is Working", Find(list, "s-limit").State == BuddyState.Working);
+            WriteSession(sessionsDir, "1.json", me, myStart, "s-limit", "local_1111", "idle", null, true, cwd, "Limited");
+            File.SetLastWriteTimeUtc(Path.Combine(sessionsDir, "1.json"), DateTime.UtcNow.AddSeconds(10));
+            WriteTranscript(projectsDir, cwd, "s-limit", limitTranscript);
+            list = scanner.Scan();
+            Check("limit: back to idle on the limit", Find(list, "s-limit").State == BuddyState.Error);
 
             // A newer ordinary reply anywhere proves the limit was lifted.
             WriteTranscript(projectsDir, cwd, "s-other", User("again") + "\n" + Assistant("works") + "\n" + Trailer);
             SessionScanner fresh = new SessionScanner(sessionsDir, projectsDir);
             list = fresh.Scan();
             Check("limit: lifted by a newer reply", fresh.LimitResetUtc == DateTime.MinValue && Find(list, "s-limit").State == BuddyState.Idle);
+            scanner.Scan();
+            Check("limit: a remembered limit is cleared by a newer reply too", scanner.LimitResetUtc == DateTime.MinValue);
 
             // Forehead rendering.
             using (Bitmap bmp = new Bitmap(Sprite.CanvasW * 3, Sprite.CanvasH * 3, PixelFormat.Format32bppArgb))

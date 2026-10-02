@@ -12,6 +12,8 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 & (Join-Path $root 'build.ps1')
 
+# Absolute path, so it can be compared with the path of a running copy.
+$InstallDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($InstallDir)
 $source = Join-Path $root 'bin\ClaudeBuddy.exe'
 $target = Join-Path $InstallDir 'ClaudeBuddy.exe'
 New-Item -ItemType Directory -Force $InstallDir | Out-Null

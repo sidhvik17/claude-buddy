@@ -1,5 +1,17 @@
 # Lessons
 
+## 2026-10-02 — State the user relies on must not hang on evidence that can vanish
+
+**What happened:** the usage-limit countdown was recomputed every second from "the
+last record of the transcript is the limit message". The user deleted that message and
+the countdown disappeared; with auto-resume on, the session reported `busy` and the
+buddy showed "working" while it was only parked waiting for the reset.
+
+**Rule:** when something is true until a known time (a limit until its reset), record
+it once and hold it until that time or until positive proof it ended. Do not re-derive
+it from a file the user can edit or rewind. And do not take a status word at face
+value: check what the session is actually doing before calling it "working".
+
 ## 2026-10-02 — Multi-agent runs spend the user's quota
 
 **What happened:** an eight-agent review workflow ran in the background twice. Both

@@ -17,7 +17,7 @@ New-Item -ItemType Directory -Force (Join-Path $root 'assets') | Out-Null
 
 function Invoke-Csc([string]$icon) {
     $cscArgs = @(
-        '/nologo', '/target:winexe', '/optimize+', '/warn:4', '/platform:anycpu',
+        '/nologo', '/target:winexe', '/optimize+', '/warn:4', '/platform:anycpu', '/codepage:65001',
         "/out:$exe",
         "/win32manifest:$(Join-Path $root 'src\app.manifest')",
         '/r:System.dll', '/r:System.Core.dll', '/r:System.Drawing.dll', '/r:System.Windows.Forms.dll'

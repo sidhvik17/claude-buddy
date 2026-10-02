@@ -18,8 +18,14 @@ If several sessions disagree, the most urgent wins: yellow > red > green > grey 
 **Usage-limit timer.** When Claude says "You've hit your session limit · resets
 3:40am", the buddy shows the time left on its forehead (`2:34` = 2 h 34 min, then
 `45m`, then `30s`) until the reset. Clicking the buddy turns the red lamp off but the
-countdown stays. It disappears early if Claude answers normally again, and it steps
-aside while a session is working.
+countdown stays. Once seen, the limit is remembered until its reset time: deleting the
+message, closing the session or restarting the buddy does not lose it. It disappears
+early only if Claude answers a later request normally, and it steps aside while a
+session is really working. A session that is merely parked until the limit resets
+(auto-resume) counts as limited, not as working.
+
+The buddy learns about a limit only when a session runs into it. Until some request
+has failed with the limit message, there is nothing on disk to read.
 
 It is one small native `.exe` (about 100 KB, about 40 MB of RAM), written in C# and
 compiled with the compiler that already ships inside Windows. Nothing to install, no
@@ -121,7 +127,10 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
 ```
 
 It stops the buddy and removes the autostart entry, the Desktop shortcut and the
-install folder.
+buddy's own files (`ClaudeBuddy.exe`, `config.ini`, `buddy.log`). The install folder
+is removed only if that leaves it empty, so nothing else you keep there is touched.
+With no arguments it finds the buddy through its autostart entry; if you installed
+with `-InstallDir` and switched "Start with Windows" off, pass the same `-InstallDir`.
 
 > **Building from a terminal inside the Claude desktop app?** That app is a Store
 > (MSIX) package. Anything it launches gets its writes to `AppData` silently redirected
@@ -221,10 +230,14 @@ as `You've hit your session limit · resets 3:40am (Asia/Calcutta)`.
 `LimitMessage.ParseReset` pulls the clock time out of that text (it is in the
 machine's own time zone) and turns it into the next moment that clock time occurs
 after the error. Until then the session stays red and the countdown is drawn on the
-forehead in a 3 x 5 pixel font; the eyes move down to make room. The limit counts as
-lifted early if any session's transcript ends with an ordinary reply newer than the
-limit message. Limit messages without a reset time ("out of usage credits") are
-treated as ordinary errors.
+forehead in a 3 x 5 pixel font; the eyes move down to make room. The reset time is
+kept in memory and in `config.ini` (`limit_reset`, `limit_seen`), so it no longer
+depends on the message staying in the transcript. It counts as lifted early if any
+session's transcript ends with an ordinary reply whose request was sent after the
+limit message. A session whose status is `busy` but whose last record is the limit
+message, with no new prompt after it, is parked waiting for the reset and is shown as
+limited. Limit messages without a reset time ("out of usage credits") are treated as
+ordinary errors.
 
 ### 4.3 A window that is only a sprite
 
@@ -373,7 +386,7 @@ Things that cost time and are worth knowing:
 
 Checked:
 
-- Build is clean and all 73 self-test checks pass.
+- Build is clean and all 84 self-test checks pass.
 - `--dump` against the real `~/.claude` matched reality (6 sessions, the 2 helper
   processes filtered out).
 - The contact sheet shows every state drawing correctly.
@@ -385,14 +398,19 @@ Checked:
 
 Not yet seen:
 
-- The usage-limit countdown against a real limit. The parsing is tested against the
-  exact messages found in real transcripts, and the drawing through the preview menu,
-  but no limit has been hit since the feature was added.
+- A session parked on a limit with auto-resume on, after the fix that stops it being
+  shown as working. Covered by self-tests with fake state files only.
+- The countdown surviving a deleted limit message and a buddy restart, on a real
+  limit. Also self-tests only so far.
+- Moving between monitors with different scaling. The DPI-change handling was
+  rewritten after code review, on a machine with a single monitor.
 
 Seen in the installed buddy's own log, from real sessions:
 
 - Yellow: `Working -> Waiting (… waiting: permission prompt)` and `waiting: dialog open`.
 - Red: `Working -> Error (… error: rate limit)`, four times in one night.
+- Limit countdown: `usage limit in force, resets at 16:40`, then
+  `usage limit no longer in force` at 16:40:00 exactly.
 
 ## Troubleshooting
 

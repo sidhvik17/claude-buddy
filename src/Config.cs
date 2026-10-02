@@ -20,6 +20,8 @@ namespace ClaudeBuddy
         public static bool TopMost = true;
         public static bool AutoStart = true;
         public static string Hotkey = "Ctrl+Alt+H";   // hide/show; "none" turns it off
+        public static long LimitResetTicks;           // remembered usage limit (UTC ticks), 0 = none
+        public static long LimitSeenTicks;
 
         static string file;
 
@@ -33,7 +35,11 @@ namespace ClaudeBuddy
             file = Path.Combine(AppDir, dev ? "config.dev.ini" : "config.ini");
             try
             {
-                if (!File.Exists(file)) return;
+                if (!File.Exists(file))
+                {
+                    Save(); // write the defaults so there is a file to edit (hotkey, size, ...)
+                    return;
+                }
                 foreach (string raw in File.ReadAllLines(file))
                 {
                     int eq = raw.IndexOf('=');
@@ -48,6 +54,8 @@ namespace ClaudeBuddy
                     else if (key == "topmost") TopMost = value != "0";
                     else if (key == "autostart") AutoStart = value != "0";
                     else if (key == "hotkey") Hotkey = value;
+                    else if (key == "limit_reset") long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out LimitResetTicks);
+                    else if (key == "limit_seen") long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out LimitSeenTicks);
                 }
             }
             catch (Exception ex)
@@ -68,6 +76,8 @@ namespace ClaudeBuddy
                 sb.AppendLine("topmost=" + (TopMost ? "1" : "0"));
                 sb.AppendLine("autostart=" + (AutoStart ? "1" : "0"));
                 sb.AppendLine("hotkey=" + Hotkey);
+                sb.AppendLine("limit_reset=" + LimitResetTicks.ToString(CultureInfo.InvariantCulture));
+                sb.AppendLine("limit_seen=" + LimitSeenTicks.ToString(CultureInfo.InvariantCulture));
                 File.WriteAllText(file, sb.ToString());
             }
             catch (Exception ex)
@@ -187,9 +197,18 @@ namespace ClaudeBuddy
                     FileInfo fi = new FileInfo(path);
                     if (fi.Exists && fi.Length > MaxBytes)
                     {
-                        string old = path + ".old";
-                        if (File.Exists(old)) File.Delete(old);
-                        File.Move(path, old);
+                        try
+                        {
+                            string old = path + ".old";
+                            if (File.Exists(old)) File.Delete(old);
+                            File.Move(path, old);
+                        }
+                        catch (Exception)
+                        {
+                            // Something has the log open. Keep writing rather than go silent,
+                            // up to a hard limit; rotation is retried on the next write.
+                            if (fi.Length > MaxBytes * 4) return;
+                        }
                     }
                     File.AppendAllText(path,
                         DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) + "  " + message + Environment.NewLine);
