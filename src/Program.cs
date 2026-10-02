@@ -50,7 +50,7 @@ namespace ClaudeBuddy
                     i++;
                 }
                 else if (a == "--quit") command = a;
-                else if ((a == "--selftest" || a == "--render" || a == "--make-icon" || a == "--dump") && next != null)
+                else if ((a == "--selftest" || a == "--render" || a == "--frames" || a == "--make-icon" || a == "--dump") && next != null)
                 {
                     command = a;
                     commandArg = next;
@@ -69,6 +69,7 @@ namespace ClaudeBuddy
             {
                 if (command == "--selftest") return SelfTest.Run(commandArg);
                 if (command == "--render") { Sprite.WriteSheet(commandArg, 6); return 0; }
+                if (command == "--frames") { Sprite.WriteDemoFrames(commandArg, 8); return 0; }
                 if (command == "--make-icon") { Sprite.WriteIco(commandArg); return 0; }
                 if (command == "--dump") { Dump(opts, commandArg); return 0; }
                 if (command == "--quit") { SignalQuit(opts.Dev); return 0; }

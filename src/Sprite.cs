@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.Drawing.Text;
 using System.Globalization;
 using System.IO;
 
@@ -718,6 +719,81 @@ namespace ClaudeBuddy
                 }
                 sheet.Save(path, ImageFormat.Png);
             }
+        }
+
+        // ---- frames for the README animation ---------------------------------------------
+
+        sealed class DemoScene
+        {
+            public readonly BuddyState State;
+            public readonly int FirstTick;   // where in the state's animation the scene starts
+            public readonly int Ticks;       // how long the scene lasts
+            public readonly string Timer;    // forehead countdown, or null
+            public readonly string Caption;
+
+            public DemoScene(BuddyState state, int firstTick, int ticks, string timer, string caption)
+            {
+                State = state;
+                FirstTick = firstTick;
+                Ticks = ticks;
+                Timer = timer;
+                Caption = caption;
+            }
+        }
+
+        static readonly DemoScene[] DemoScenes = new DemoScene[]
+        {
+            new DemoScene(BuddyState.Working, 0, 36, null, "working"),                    // at the laptop
+            new DemoScene(BuddyState.Working, WorkActTicks, 20, null, "working"),         // running
+            new DemoScene(BuddyState.Working, 2 * WorkActTicks, 24, null, "working"),     // thinking
+            new DemoScene(BuddyState.Waiting, 0, 36, null, "needs your permission"),
+            new DemoScene(BuddyState.Error, 0, 30, "2:34", "usage limit: resets in 2 h 34 min"),
+            new DemoScene(BuddyState.Done, 0, 14, null, "done"),
+            new DemoScene(BuddyState.Idle, 0, 12, null, "idle")
+        };
+
+        // Writes the README demo as one PNG per animation tick (frame-0000.png, ...), drawn by
+        // the same renderer the window uses. docs/make_demo.py packs them into a GIF.
+        public static int WriteDemoFrames(string folder, int scale)
+        {
+            Directory.CreateDirectory(folder);
+            int cw = CanvasW * scale;
+            int ch = CanvasH * scale;
+            const int PadX = 60;
+            const int PadTop = 14;
+            const int CaptionH = 52;
+            int index = 0;
+            using (Bitmap frame = new Bitmap(cw + 2 * PadX, PadTop + ch + CaptionH, PixelFormat.Format32bppArgb))
+            using (Bitmap cell = new Bitmap(cw, ch, PixelFormat.Format32bppArgb))
+            using (Graphics fg = Graphics.FromImage(frame))
+            using (Font font = new Font("Segoe UI", 20f, FontStyle.Regular, GraphicsUnit.Pixel))
+            using (SolidBrush ink = new SolidBrush(Color.FromArgb(205, 208, 214)))
+            using (StringFormat centered = new StringFormat())
+            {
+                centered.Alignment = StringAlignment.Center;
+                centered.LineAlignment = StringAlignment.Center;
+                fg.TextRenderingHint = TextRenderingHint.AntiAlias;
+                fg.InterpolationMode = InterpolationMode.NearestNeighbor;
+                fg.PixelOffsetMode = PixelOffsetMode.Half;
+                foreach (DemoScene scene in DemoScenes)
+                {
+                    for (int t = 0; t < scene.Ticks; t++)
+                    {
+                        Pose pose = GetPose(scene.State, scene.FirstTick + t);
+                        if (scene.Timer != null) ApplyTimer(pose, scene.Timer);
+                        using (Graphics cg = Graphics.FromImage(cell))
+                        {
+                            Render(cg, pose, scale);
+                        }
+                        fg.Clear(Color.FromArgb(30, 31, 34));
+                        fg.DrawImage(cell, PadX, PadTop, cw, ch);
+                        fg.DrawString(scene.Caption, font, ink, new RectangleF(0, PadTop + ch, frame.Width, CaptionH - 8), centered);
+                        frame.Save(Path.Combine(folder, "frame-" + index.ToString("0000", CultureInfo.InvariantCulture) + ".png"), ImageFormat.Png);
+                        index++;
+                    }
+                }
+            }
+            return index;
         }
     }
 }
